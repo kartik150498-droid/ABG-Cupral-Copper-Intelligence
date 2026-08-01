@@ -159,75 +159,76 @@ if "audit_log" not in st.session_state:
 # ============================================================
 # SIDEBAR — role + settings
 # ============================================================
-import hashlib
-
-# ============================================================
-# LOGIN — hardcoded credentials map. Each customer login is
-# HARD-LOCKED to their own account key. There is no UI path
-# that lets a logged-in customer view another customer's data,
-# regardless of what they click or type in the URL.
-# ============================================================
-CREDENTIALS = {
-    "am_lala": {"password": "cupral2026", "role": "account_manager", "account_key": None},
-    "havells_team": {"password": "havells2026", "role": "customer", "account_key": "havells"},
-    "polycab_team": {"password": "polycab2026", "role": "customer", "account_key": "polycab"},
-    "kei_team": {"password": "kei2026", "role": "customer", "account_key": "kei"},
-}
-
-
-def check_login(username, password):
-    user = CREDENTIALS.get(username)
-    if user and user["password"] == password:
-        return user
-    return None
-
-
-if "auth" not in st.session_state:
-    st.session_state.auth = None
-
-if st.session_state.auth is None:
-    st.title("Cupral Copper Intelligence — sign in")
-    st.caption("Internal decision-support tool. Customer accounts are locked to their own data only.")
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign in")
-    if submitted:
-        user = check_login(username, password)
-        if user:
-            st.session_state.auth = {"username": username, **user}
-            st.rerun()
-        else:
-            st.error("Incorrect username or password.")
-    st.stop()  # nothing below this line renders until login succeeds
-
-auth = st.session_state.auth
-
 st.sidebar.markdown("### ● Cupral Copper Intelligence")
-st.sidebar.caption(f"Signed in as **{auth['username']}** ({auth['role'].replace('_', ' ')})")
-if st.sidebar.button("Sign out"):
-    st.session_state.auth = None
-    st.rerun()
+st.sidebar.caption("Price & Supply Shield — the decision-support layer behind Cupral's "
+                    "account relationships.")
 
-# role is now DERIVED from the authenticated login, never chosen freely
-if auth["role"] == "account_manager":
+view_mode = st.sidebar.radio(
+    "View",
+    ["Program manager desk (full view)", "Preview: one customer's own screen"],
+    help="The Program manager desk is what Cupral's own team uses. The customer preview shows "
+         "exactly what a single named customer would see if logged into their own account — "
+         "select one customer below; no other customer's data is ever shown alongside it."
+)
+
+if view_mode.startswith("Program manager"):
     role = "Account Manager (internal)"
 else:
     role = "Customer team (e.g. Polycab)"
-    locked_account_key = auth["account_key"]  # this is the ONLY account this user will ever see
+    preview_choice = st.sidebar.selectbox(
+        "Previewing as:",
+        list(CUSTOMERS.keys()), format_func=lambda k: CUSTOMERS[k]["label"]
+    )
+    locked_account_key = preview_choice
+    st.sidebar.info(
+        "**In production, this is per-account authenticated.** Each customer logs into their own "
+        "account and only ever sees this exact screen for their own numbers — Polycab's login "
+        "could never show Havells' or KEI's data, and vice versa. This preview switches between "
+        "accounts one at a time only so the mechanism can be demonstrated here without needing "
+        "separate live logins.",
+        icon="🔒"
+    )
 
 fx = st.sidebar.number_input("USD/INR rate", min_value=70.0, max_value=100.0, value=FX_RATE, step=0.5)
-st.sidebar.caption("This is an internal decision-support tool. Live LME feeds are already a paid "
-                    "commodity every serious customer holds — this tool exists to translate a price "
-                    "move into a specific account's numbers and a ready-to-use talking point, not to "
-                    "replace the account manager's own call.")
+
+# ============================================================
+# LEADERSHIP-FACING EXPLAINER — shown once at the top, since
+# this may be viewed with nobody present to narrate it.
+# ============================================================
+with st.expander("What is this, and why does it matter? (read first)", expanded=True):
+    st.markdown("""
+**The problem it solves:** Cupral's customers already pay for live LME price feeds — that information
+is a commodity everyone already has. What none of them get from anyone today is someone translating a
+price move into *"here is what this specifically costs or saves you, on your own numbers, right now."*
+That translation is the entire value of this tool.
+
+**Why it matters strategically:** Every interview behind this case pointed to the same finding —
+relationships, not data access, are what actually retain customers in this industry. So this tool is
+deliberately *not* a self-service dashboard that replaces the account manager's call. Its only output
+on the internal side is a ready-made talking point that makes that human call sharper and better
+informed — the relationship still does the work, this just arms it with better ammunition.
+
+**Why it's hard to copy:** Anyone can buy an LME data feed. What competitors can't quickly replicate is
+the accumulated, account-specific memory this builds over time — what happened last time a price move
+like this hit Polycab, how KEI has historically reacted, and so on. That memory only exists if you've
+been paying close attention to a specific account for years, which is exactly the kind of durable,
+relationship-based moat the rest of this strategy is built around.
+
+**What's real vs. illustrative here:** The customer profiles (Havells, Polycab, KEI) use real,
+publicly disclosed figures — revenue, raw-material cost share, and documented market reactions. The
+historical price chart uses real, cited LME anchor points. The exact tonnage-on-hand and coverage-day
+figures are reasonable estimates built on top of those real numbers, since none of these companies
+publish that level of detail — this is a working prototype of the mechanism, not a claim of live,
+proprietary customer data.
+""")
 
 # ============================================================
 # MAIN — Account Manager view
 # ============================================================
 if role.startswith("Account Manager"):
-    st.title("Cupral Copper Intelligence — Account manager desk")
+    st.title("Cupral Copper Intelligence — Program manager desk")
     st.caption("Record today's LME price. Each account is evaluated against its own last alert "
+
                "point, not a fixed level — thresholds and customer notification delay are configurable per account.")
 
     col1, col2 = st.columns([2, 1])
@@ -330,10 +331,11 @@ if role.startswith("Account Manager"):
 # MAIN — Customer team view (e.g. Polycab's own team)
 # ============================================================
 else:
-    cust_key = locked_account_key  # hard-locked from login — no dropdown, no way to switch accounts
+    cust_key = locked_account_key  # set only from the sidebar preview selector — see isolation note above
     cust = CUSTOMERS[cust_key]
     st.title(f"Your copper position — {cust['label']}")
-    st.caption("You are viewing data for your own account only. This login has no access to any other customer's data.")
+    st.caption("This is exactly what this customer would see when logged into their own account — "
+               "their own numbers only, nothing from any other customer.")
     current_price = st.slider("Today's LME price ($/tonne)", 8500, 15000, REFERENCE_PRICE, step=50,
                                key="cust_slider")
     impact = compute_impact(cust, current_price, REFERENCE_PRICE, fx)
