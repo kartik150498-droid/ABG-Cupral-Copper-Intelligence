@@ -159,8 +159,63 @@ if "audit_log" not in st.session_state:
 # ============================================================
 # SIDEBAR — role + settings
 # ============================================================
+import hashlib
+
+# ============================================================
+# LOGIN — hardcoded credentials map. Each customer login is
+# HARD-LOCKED to their own account key. There is no UI path
+# that lets a logged-in customer view another customer's data,
+# regardless of what they click or type in the URL.
+# ============================================================
+CREDENTIALS = {
+    "am_lala": {"password": "cupral2026", "role": "account_manager", "account_key": None},
+    "havells_team": {"password": "havells2026", "role": "customer", "account_key": "havells"},
+    "polycab_team": {"password": "polycab2026", "role": "customer", "account_key": "polycab"},
+    "kei_team": {"password": "kei2026", "role": "customer", "account_key": "kei"},
+}
+
+
+def check_login(username, password):
+    user = CREDENTIALS.get(username)
+    if user and user["password"] == password:
+        return user
+    return None
+
+
+if "auth" not in st.session_state:
+    st.session_state.auth = None
+
+if st.session_state.auth is None:
+    st.title("Cupral Copper Intelligence — sign in")
+    st.caption("Internal decision-support tool. Customer accounts are locked to their own data only.")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign in")
+    if submitted:
+        user = check_login(username, password)
+        if user:
+            st.session_state.auth = {"username": username, **user}
+            st.rerun()
+        else:
+            st.error("Incorrect username or password.")
+    st.stop()  # nothing below this line renders until login succeeds
+
+auth = st.session_state.auth
+
 st.sidebar.markdown("### ● Cupral Copper Intelligence")
-role = st.sidebar.radio("View as", ["Account Manager (internal)", "Customer team (e.g. Polycab)"])
+st.sidebar.caption(f"Signed in as **{auth['username']}** ({auth['role'].replace('_', ' ')})")
+if st.sidebar.button("Sign out"):
+    st.session_state.auth = None
+    st.rerun()
+
+# role is now DERIVED from the authenticated login, never chosen freely
+if auth["role"] == "account_manager":
+    role = "Account Manager (internal)"
+else:
+    role = "Customer team (e.g. Polycab)"
+    locked_account_key = auth["account_key"]  # this is the ONLY account this user will ever see
+
 fx = st.sidebar.number_input("USD/INR rate", min_value=70.0, max_value=100.0, value=FX_RATE, step=0.5)
 st.sidebar.caption("This is an internal decision-support tool. Live LME feeds are already a paid "
                     "commodity every serious customer holds — this tool exists to translate a price "
@@ -275,10 +330,10 @@ if role.startswith("Account Manager"):
 # MAIN — Customer team view (e.g. Polycab's own team)
 # ============================================================
 else:
-    st.title("Your copper position — Cupral Copper Intelligence")
-    cust_key = st.selectbox("Select your organisation (demo only — production would auto-detect login)",
-                             list(CUSTOMERS.keys()), format_func=lambda k: CUSTOMERS[k]["label"])
+    cust_key = locked_account_key  # hard-locked from login — no dropdown, no way to switch accounts
     cust = CUSTOMERS[cust_key]
+    st.title(f"Your copper position — {cust['label']}")
+    st.caption("You are viewing data for your own account only. This login has no access to any other customer's data.")
     current_price = st.slider("Today's LME price ($/tonne)", 8500, 15000, REFERENCE_PRICE, step=50,
                                key="cust_slider")
     impact = compute_impact(cust, current_price, REFERENCE_PRICE, fx)
