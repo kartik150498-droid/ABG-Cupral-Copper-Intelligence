@@ -78,9 +78,30 @@ PRICE_HISTORY = [
 ]
 
 # ============================================================
+# LIVE DATA REFINEMENT — coverage-day estimates start as public
+# estimates and get refined as account managers log real
+# observations from calls. This is the actual data-acquisition
+# mechanism, made interactive rather than just narrated.
+# ============================================================
+if "coverage_overrides" not in st.session_state:
+    st.session_state.coverage_overrides = {k: None for k in CUSTOMERS}
+if "observation_count" not in st.session_state:
+    st.session_state.observation_count = {k: 0 for k in CUSTOMERS}
+
+
+def get_effective_coverage(key, cust):
+    """Return (coverage_days, confidence_label). Uses AM-logged override if one exists,
+    otherwise falls back to the public-disclosure-based estimate."""
+    override = st.session_state.coverage_overrides.get(key)
+    if override is not None:
+        n = st.session_state.observation_count[key]
+        return override, f"Refined from {n} account-manager observation{'s' if n != 1 else ''}"
+    return cust["coverage_days"], "Estimated from public disclosures — not yet confirmed by a call"
+
+# ============================================================
 # CALCULATION ENGINE — fully transparent, no black box
 # ============================================================
-def compute_tonnage(customer, ref_price_usd, fx):
+def compute_tonnage(customer, ref_price_usd, fx, coverage_days):
     """Compute copper tonnes/quarter, tonnes/day, and tonnes on hand — all live-calculated."""
     copper_cost_per_qtr_cr = (
         customer["quarterly_revenue_cr"]
@@ -92,7 +113,7 @@ def compute_tonnage(customer, ref_price_usd, fx):
     copper_kg_per_qtr = copper_cost_per_qtr_inr / ref_price_inr_per_kg
     copper_tonnes_per_qtr = copper_kg_per_qtr / 1000
     tonnes_per_day = copper_tonnes_per_qtr / 90
-    tonnes_on_hand = tonnes_per_day * customer["coverage_days"]
+    tonnes_on_hand = tonnes_per_day * coverage_days
     return {
         "copper_cost_per_qtr_cr": copper_cost_per_qtr_cr,
         "tonnes_per_qtr": copper_tonnes_per_qtr,
@@ -101,8 +122,8 @@ def compute_tonnage(customer, ref_price_usd, fx):
     }
 
 
-def compute_impact(customer, current_price_usd, ref_price_usd, fx):
-    tonnage = compute_tonnage(customer, ref_price_usd, fx)
+def compute_impact(customer, current_price_usd, ref_price_usd, fx, coverage_days):
+    tonnage = compute_tonnage(customer, ref_price_usd, fx, coverage_days)
     ref_price_inr_per_kg = ref_price_usd * fx / 1000
     current_price_inr_per_kg = current_price_usd * fx / 1000
     delta_inr_per_kg = current_price_inr_per_kg - ref_price_inr_per_kg
@@ -222,6 +243,25 @@ publish that level of detail — this is a working prototype of the mechanism, n
 proprietary customer data.
 """)
 
+with st.expander("Where would this data actually come from in practice? (data roadmap)", expanded=True):
+    st.markdown("""
+Cupral does not have live visibility into a customer's actual inventory today — no company in this
+industry does, for a competitor's or customer's stockpile. This tool starts from public-disclosure
+estimates and is designed to get more accurate through two mechanisms that already exist inside
+Cupral's own operations, not new infrastructure:
+
+1. **Account manager call-logging.** Every scheduled relationship call already happens. If the account
+   manager logs one observed data point after each call — "Polycab mentioned they're carrying about
+   5 weeks of stock right now" — the estimate for that account is replaced with a real, first-party
+   number below, and confidence improves with every subsequent call.
+2. **Customer disclosure via channel financing.** Larger accounts already using Cupral's NBFC-backed
+   channel financing disclose real financials as part of that application process — this is an
+   existing paperwork flow, not a new ask, and it's a natural source of verified figures over time.
+
+Try it: log an observation below for any account and watch its confidence label change from
+"estimated" to "refined."
+""")
+
 # ============================================================
 # MAIN — Account Manager view
 # ============================================================
@@ -255,7 +295,8 @@ if role.startswith("Account Manager"):
     st.subheader("Accounts")
 
     for key, cust in CUSTOMERS.items():
-        impact = compute_impact(cust, current_price, REFERENCE_PRICE, fx)
+        eff_coverage, confidence_label = get_effective_coverage(key, cust)
+        impact = compute_impact(cust, current_price, REFERENCE_PRICE, fx, eff_coverage)
         triggered = abs(impact["delta_pct"]) >= cust["threshold_pct"]
 
         with st.container(border=True):
@@ -264,9 +305,8 @@ if role.startswith("Account Manager"):
                 st.markdown(f"**{cust['label']}**  ·  sensitivity: {cust['sensitivity']}")
                 st.caption(cust["description"])
             with c2:
-                st.metric("Coverage", f"{cust['coverage_days']} days",
-                          help="Days of copper coverage, estimated from disclosed revenue, "
-                               "raw-material share, and copper share — calculated live below.")
+                st.metric("Coverage", f"{eff_coverage} days")
+                st.caption(f"🔹 {confidence_label}")
             with c3:
                 st.metric("Tonnes on hand", f"{impact['tonnes_on_hand']:,.0f} t")
             with c4:
@@ -282,9 +322,21 @@ if role.startswith("Account Manager"):
                          f"Rs {impact['ref_price_inr_per_kg']:.2f}/kg")
                 st.write(f"= {impact['tonnes_per_qtr']:,.0f} tonnes/quarter "
                          f"→ {impact['tonnes_per_day']:.1f} tonnes/day")
-                st.write(f"× {cust['coverage_days']} days coverage = **{impact['tonnes_on_hand']:,.0f} tonnes on hand**")
+                st.write(f"× {eff_coverage} days coverage ({confidence_label}) = "
+                         f"**{impact['tonnes_on_hand']:,.0f} tonnes on hand**")
                 st.write(f"Mark-to-market at today's price (Rs {impact['current_price_inr_per_kg']:.2f}/kg): "
                          f"**Rs {impact['impact_cr']:+,.1f} crore**")
+
+            with st.expander("Log an observation from a real call (refines the estimate)"):
+                st.caption("Simulates the account manager updating this account's coverage estimate "
+                           "after an actual conversation — this is how the data gets real over time.")
+                new_val = st.number_input(f"Observed coverage (days) — {cust['label']}",
+                                           min_value=5, max_value=90,
+                                           value=eff_coverage, step=1, key=f"obs_{key}")
+                if st.button(f"Save observation for {cust['label']}", key=f"save_obs_{key}"):
+                    st.session_state.coverage_overrides[key] = new_val
+                    st.session_state.observation_count[key] += 1
+                    st.rerun()
 
             talking_point, tone = generate_talking_point(cust, impact, full_detail=True)
             box_color = "#4a1b0c" if tone == "falling" else ("#173404" if tone == "rising" else "#2c2c2a")
@@ -305,7 +357,13 @@ if role.startswith("Account Manager"):
                                     value=cust["customer_delay_hours"], step=1, key=f"delay_{key}")
 
             if triggered:
-                if st.button(f"Log this alert for {cust['label']}", key=f"log_{key}"):
+                bcol1, bcol2 = st.columns(2)
+                with bcol1:
+                    log_clicked = st.button(f"Log this alert", key=f"log_{key}")
+                with bcol2:
+                    lock_clicked = st.button(f"Offer forward-price lock", key=f"lock_{key}")
+
+                if log_clicked:
                     now = datetime.now()
                     st.session_state.audit_log.append({
                         "time": now.strftime("%Y-%m-%d %H:%M"),
@@ -316,9 +374,53 @@ if role.startswith("Account Manager"):
                         "customer_notified_at": (now + timedelta(hours=cust["customer_delay_hours"])).strftime("%Y-%m-%d %H:%M"),
                     })
                     st.session_state.last_alert_price[key] = current_price
-                    st.success(f"Logged. Account manager notified now. "
-                               f"Customer notification scheduled for "
-                               f"{cust['customer_delay_hours']}h later — lead-time gap preserved.")
+                    st.success(f"Logged. Account manager notified now. Customer notification "
+                               f"scheduled for {cust['customer_delay_hours']}h later.")
+                    stripped_preview, _ = generate_talking_point(cust, impact, full_detail=False)
+                    pv1, pv2 = st.columns(2)
+                    with pv1:
+                        st.markdown(f"**What you see now:**")
+                        st.info(talking_point)
+                    with pv2:
+                        st.markdown(f"**What {cust['label']} will see, in {cust['customer_delay_hours']}h:**")
+                        st.info(stripped_preview)
+
+                if lock_clicked:
+                    st.success(
+                        f"Forward-lock offer drafted for {cust['label']}: hold today's rate "
+                        f"(${current_price:,}/t) on their next order via Cupral's existing hedge "
+                        f"book — no new infrastructure required, this extends the same desk Cupral "
+                        f"already uses for its own concentrate purchases."
+                    )
+
+            if key == "polycab":
+                with st.expander("See it work on real history: Polycab's Q3 FY25"):
+                    st.caption("Polycab's own results commentary explicitly cited a copper price "
+                               "decline plus high channel inventory as a driver of wire-business "
+                               "slowdown that quarter. Here is what this tool would have flagged at "
+                               "an illustrative price level consistent with that period.")
+                    backtest_price = 9800
+                    bt_impact = compute_impact(cust, backtest_price, REFERENCE_PRICE, fx, eff_coverage)
+                    bt_point, _ = generate_talking_point(cust, bt_impact, full_detail=True)
+                    st.markdown(f"**At ${backtest_price:,}/t:**")
+                    st.info(bt_point)
+                    st.caption("What actually happened next, per Polycab's own disclosure: wire "
+                               "business slowdown driven by the price decline and channel destocking "
+                               "— consistent with what this tool would have flagged in advance.")
+
+    st.markdown("---")
+    st.subheader("Illustrative value protected")
+    st.caption("A simple, transparent estimate — not a forecast — of what proactive outreach could "
+               "be worth if it helps retain volume during price shocks across these three accounts.")
+    retention_pct = st.slider("Assumed volume retained by earlier outreach (%)", 0.0, 10.0, 2.0, step=0.5)
+    total_qtr_revenue = sum(c["quarterly_revenue_cr"] for c in CUSTOMERS.values())
+    assumed_margin = 0.10
+    value_protected = total_qtr_revenue * 4 * (retention_pct / 100) * assumed_margin
+    st.metric("Estimated annual value protected across these 3 accounts",
+              f"Rs {value_protected:,.0f} crore",
+              help="Combined annual revenue of the three accounts × assumed retained volume % × "
+                   "an illustrative 10% margin. Purely directional — the point is that even a small "
+                   "retention effect is worth real money at this scale.")
 
     st.markdown("---")
     st.subheader("Audit trail — proves the lead-time gap")
@@ -333,12 +435,13 @@ if role.startswith("Account Manager"):
 else:
     cust_key = locked_account_key  # set only from the sidebar preview selector — see isolation note above
     cust = CUSTOMERS[cust_key]
+    eff_coverage, _ = get_effective_coverage(cust_key, cust)
     st.title(f"Your copper position — {cust['label']}")
     st.caption("This is exactly what this customer would see when logged into their own account — "
                "their own numbers only, nothing from any other customer.")
     current_price = st.slider("Today's LME price ($/tonne)", 8500, 15000, REFERENCE_PRICE, step=50,
                                key="cust_slider")
-    impact = compute_impact(cust, current_price, REFERENCE_PRICE, fx)
+    impact = compute_impact(cust, current_price, REFERENCE_PRICE, fx, eff_coverage)
 
     st.metric("Your estimated copper position", f"{impact['tonnes_on_hand']:,.0f} tonnes")
     st.metric("Price move vs your reference", f"{impact['delta_pct']:+.1f}%")
